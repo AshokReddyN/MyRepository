@@ -120,6 +120,85 @@ The application will typically start on port `8080`.
 Once the application is running locally, you can access the Swagger UI for API documentation and testing:
 *   **Swagger UI:** `http://localhost:8080/swagger-ui.html`
 
+## Running Locally with Docker Compose
+
+This section describes how to run the User Management API and its MongoDB dependency using Docker Compose for a containerized local development environment.
+
+### Prerequisites
+
+*   **Docker Desktop:** Installed and running. Alternatively, Docker Engine with Docker Compose CLI. Ensure the Docker daemon is active.
+
+### Configuration (Optional but Recommended)
+
+Before starting, it's highly recommended to update the default JWT secret for better security, even for local development.
+
+1.  **Open `docker-compose.yml`:** Locate this file at the root of the project.
+2.  **Update `JWT_SECRET`:**
+    Find the `environment` section for the `user-management-api` service and change the `JWT_SECRET` value:
+    ```yaml
+    services:
+      user-management-api:
+        environment:
+          # ... other environment variables
+          - JWT_SECRET=YourStrongSecretForDockerComposeEnvironmentPleaseChange # <-- CHANGE THIS
+          # ... other environment variables
+    ```
+    Replace `YourStrongSecretForDockerComposeEnvironmentPleaseChange` with a strong, unique secret.
+
+### Commands
+
+Navigate to the root directory of the project where `docker-compose.yml` is located before running these commands.
+
+*   **Build and Start Services:**
+    This command builds the Docker image for the Spring Boot application (if it's the first time or if `api/` code has changed) and starts both the `user-management-api` and `mongodb` services.
+    ```bash
+    docker-compose up --build
+    ```
+    To run the services in detached mode (in the background):
+    ```bash
+    docker-compose up --build -d
+    ```
+
+*   **Accessing the Application:**
+    Once the services are up and running:
+    *   **Application API:** `http://localhost:8080`
+    *   **Swagger UI for API testing:** `http://localhost:8080/swagger-ui.html`
+
+*   **Viewing Logs:**
+    To view the logs from the running containers (especially useful for seeing the OTPs):
+    *   For the User Management API:
+        ```bash
+        docker-compose logs -f user-management-api
+        ```
+    *   For MongoDB:
+        ```bash
+        docker-compose logs -f mongodb
+        ```
+    Press `Ctrl+C` to stop tailing the logs.
+
+*   **Stopping Services:**
+    To stop and remove the containers, network, and (optionally) volumes:
+    ```bash
+    docker-compose down
+    ```
+
+*   **Data Persistence:**
+    *   MongoDB data is persisted in a Docker named volume called `mongodb_data` (as defined in `docker-compose.yml`). This means your data will remain even if you stop and remove the containers with `docker-compose down`.
+    *   To stop the services and remove the `mongodb_data` volume (e.g., to start fresh), use:
+        ```bash
+        docker-compose down -v
+        ```
+
+### How OTP Works with Docker Compose
+
+When running via Docker Compose:
+*   **OTPs are logged to the console** of the `user-management-api` container.
+*   You can view these logs to get the OTP for registration or login using the command:
+    ```bash
+    docker-compose logs -f user-management-api
+    ```
+    Look for log entries similar to: `SIMULATING SMS: Sending OTP 123456 to mobile number ...`
+
 ## Infrastructure Deployment (`infra/`)
 
 The AWS infrastructure is managed using Terraform.

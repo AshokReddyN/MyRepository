@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:latest # Consider using a specific version like mongo:5.0 or mongo:6.0 for stability
+    container_name: user-mongo-db
+    ports:
+      - "27017:27017" # Expose MongoDB port to host (optional, for external tools like MongoDB Compass)
+    volumes:
+      - mongodb_data:/data/db # Persist MongoDB data
+    networks:
+      - user-management-net
+    healthcheck: # Optional: Basic healthcheck for MongoDB
+      test: echo 'db.runCommand("ping").ok' | mongo mongodb:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  user-management-api:
+    build:
+      context: ./api # Path to the Dockerfile directory for the Spring Boot app
+      dockerfile: Dockerfile
+    container_name: user-api-service
+    ports:
+      - "8080:8080" # Map host port 8080 to container port (default 8080, or SERVER_PORT if set)
+    environment:
+      # Application specific environment variables
+      - SPRING_PROFILES_ACTIVE=docker # Optional: use a specific Spring profile for Docker Compose
+      - SPRING_DATA_MONGODB_URI=mongodb://mongodb:27017/user_management_docker # 'mongodb' is the service name of the MongoDB container
+      - JWT_SECRET=THIS_IS_A_WEAK_SECRET_FOR_DOCKER_COMPOSE_CHANGE_ME_IN_A_REAL_ENV # IMPORTANT: Replace with a strong, unique secret
+      - FAST2SMS_API_KEY=YOUR_DOCKER_FAST2SMS_KEY_PLACEHOLDER # Placeholder for Fast2SMS API Key
+      - FAST2SMS_API_URL=https://www.fast2sms.com/dev/bulkV2 # Placeholder for Fast2SMS API URL
+      # - SERVER_PORT=8080 # The Dockerfile's ENTRYPOINT already handles this via ENV; uncomment to override here.
+      # Logging related (optional, Spring Boot defaults are usually fine)
+      # - LOGGING_LEVEL_ROOT=INFO
+      # - LOGGING_LEVEL_COM_EXAMPLE_USERMANAGEMENT=DEBUG
+    depends_on:
+      mongodb: # Ensures mongodb starts and is healthy (if healthcheck is effective) before this service
+        condition: service_healthy # Use this if MongoDB healthcheck is reliable
+        # condition: service_started # Use this if healthcheck is not present or less reliable for startup
+    networks:
+      - user-management-net
+
+volumes:
+  mongodb_data: # Defines the named volume for MongoDB data persistence
+    driver: local # Default driver
+
+networks:
+  user-management-net:
+    driver: bridge # Default network driver
+```

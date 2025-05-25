@@ -52,18 +52,22 @@ This project implements a User Management service using Spring Boot, enabling us
 
 ## Prerequisites
 
-To build, run, and deploy this project, you will need:
+To build, run, and deploy this project, you will generally need:
 
-*   **Java JDK 11:** Or a compatible version as specified in `api/pom.xml`.
-*   **Apache Maven:** For building the Spring Boot application.
-*   **Docker Desktop:** For building and running Docker containers locally.
+*   **Docker Desktop:** (or Docker Engine + Docker Compose CLI) For building and running the application in containers. This is the primary method for local execution if you don't want to manage Java/Maven on your host.
 *   **Terraform CLI:** (Version >= 1.0) For managing AWS infrastructure.
 *   **AWS CLI:** For interacting with your AWS account.
 *   **Active AWS Account:** With appropriate permissions to create the resources defined in the Terraform scripts (VPC, ECS, ECR, ALB, IAM roles, etc.).
-*   **MongoDB Instance:** Access to a MongoDB database (local or cloud-hosted like MongoDB Atlas). The application requires a MongoDB URI.
+*   **MongoDB Instance:** Access to a MongoDB database (local or cloud-hosted like MongoDB Atlas) is required for the application to function. The Docker Compose setup includes a MongoDB container.
 *   **(Optional) Fast2SMS Account:** A Fast2SMS account and API key if you intend to enable actual SMS OTP delivery.
 
+**For local native development/builds (running the Spring Boot app directly on your host without Docker):**
+*   **Java JDK 11:** Or a compatible version as specified in `api/pom.xml`.
+*   **Apache Maven:** For building and running the Spring Boot application natively.
+
 ## Local Development (`api/` service)
+
+This section describes running the Spring Boot application directly on your host machine (native execution). **For this method, Java JDK 11 and Maven are required.** If you prefer a containerized setup using Docker, see the "Running Locally with Docker Compose" section.
 
 ### Configuration
 
@@ -126,7 +130,7 @@ This section describes how to run the User Management API and its MongoDB depend
 
 ### Prerequisites
 
-*   **Docker Desktop:** Installed and running. Alternatively, Docker Engine with Docker Compose CLI. Ensure the Docker daemon is active.
+*   **Docker Desktop:** Installed and running. Alternatively, Docker Engine with Docker Compose CLI. Ensure the Docker daemon is active. **No local Java or Maven installation is required for this method** as the application will be built inside a Docker container using the multi-stage `api/Dockerfile`.
 
 ### Configuration (Optional but Recommended)
 
@@ -150,7 +154,10 @@ Before starting, it's highly recommended to update the default JWT secret for be
 Navigate to the root directory of the project where `docker-compose.yml` is located before running these commands.
 
 *   **Build and Start Services:**
-    This command builds the Docker image for the Spring Boot application (if it's the first time or if `api/` code has changed) and starts both the `user-management-api` and `mongodb` services.
+    This command will:
+    1.  Build the Docker image for the Spring Boot application using the multi-stage `api/Dockerfile`. This process includes compiling the Java code and packaging the JAR **inside a Docker container**, so you do **not** need Java or Maven installed on your host machine for this method.
+    2.  Start both the `user-management-api` and `mongodb` services.
+
     ```bash
     docker-compose up --build
     ```

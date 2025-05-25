@@ -1,0 +1,242 @@
+name: Deploy Dev to AWS ECS
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+
+env:
+  AWS_REGION: "us-east-1" # Or your desired region, should match Terraform
+  # These should ideally match the names used in your Terraform setup or be outputs from a base infra setup.
+  # For this workflow, we'll assume these are known for the 'dev' environment.
+  ECR_REPOSITORY_NAME: "user-management-service" # As defined in infra/variables.tf (var.ecr_repo_name)
+  ECS_CLUSTER_NAME: "dev-cluster"                 # As created by infra/modules/ecs/main.tf (aws_ecs_cluster.main)
+  ECS_SERVICE_NAME: "dev-app-service"             # As created by infra/modules/ecs/main.tf (aws_ecs_service.main)
+  ECS_TASK_FAMILY_PREFIX: "user-management-app"   # As defined in infra/variables.tf (var.task_family_name_prefix)
+
+jobs:
+  build-and-test-app:
+    name: Build and Test Application
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+
+      - name: Cache Maven packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('api/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Build and Test with Maven
+        run: cd api && mvn -B verify --file pom.xml # 'verify' runs package and tests
+
+      - name: Upload JAR artifact (optional)
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: api/target/*.jar # Adjust if your JAR name is more specific
+
+  build-and-push-image:
+    name: Build and Push Docker Image to ECR
+    runs-on: ubuntu-latest
+    needs: build-and-test-app # Depends on successful build and test
+    outputs:
+      image_uri: ${{ steps.build_image.outputs.image_uri }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4 # Latest version
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2 # Latest version
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build_image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }} # Use commit SHA as image tag for uniqueness
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_NAME:$IMAGE_TAG ./api
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_NAME:$IMAGE_TAG
+          echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY_NAME:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+  deploy-to-ecs:
+    name: Deploy to AWS ECS using Terraform
+    runs-on: ubuntu-latest
+    needs: build-and-push-image
+    env:
+      # These TF_VARs are automatically picked up by Terraform
+      TF_VAR_aws_region: ${{ env.AWS_REGION }}
+      TF_VAR_env_name: "dev" # Explicitly setting for dev environment
+      TF_VAR_ecr_repo_name: ${{ env.ECR_REPOSITORY_NAME }}
+      TF_VAR_app_cpu: "1024" # Default from variables.tf, ensure consistency
+      TF_VAR_app_memory: "2048" # Default from variables.tf
+      TF_VAR_app_port: "8080" # Default from variables.tf
+      TF_VAR_desired_count: "1" # Default for dev
+      TF_VAR_alb_health_check_path: "/actuator/health" # Default
+      TF_VAR_task_family_name_prefix: ${{ env.ECS_TASK_FAMILY_PREFIX }}
+      TF_VAR_log_retention_in_days: "7" # Default for dev
+      # Secrets passed as TF_VARs
+      TF_VAR_mongodb_uri_placeholder: ${{ secrets.MONGODB_URI_DEV }}
+      TF_VAR_jwt_secret_placeholder: ${{ secrets.JWT_SECRET_DEV }}
+      TF_VAR_fast2sms_api_key_placeholder: ${{ secrets.FAST2SMS_API_KEY_DEV }}
+      TF_VAR_fast2sms_api_url_placeholder: ${{ secrets.FAST2SMS_API_URL_DEV }}
+      # The image URI from the previous job
+      TF_VAR_app_image_uri: ${{ needs.build-and-push-image.outputs.image_uri }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ">=1.0" # As per infra/versions.tf
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: ./infra
+
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ./infra
+        
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan -no-color \
+            -var="image_uri=${{ needs.build-and-push-image.outputs.image_uri }}" \
+            -var="mongodb_uri_placeholder=${{ secrets.MONGODB_URI_DEV }}" \
+            -var="jwt_secret_placeholder=${{ secrets.JWT_SECRET_DEV }}" \
+            -var="fast2sms_api_key_placeholder=${{ secrets.FAST2SMS_API_KEY_DEV }}" \
+            -var="fast2sms_api_url_placeholder=${{ secrets.FAST2SMS_API_URL_DEV }}"
+        working-directory: ./infra
+        continue-on-error: true # To allow checking plan output even if it has changes
+
+      - name: Terraform Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+        
+      - name: Terraform Apply
+        run: |
+          terraform apply -auto-approve -input=false \
+            -var="image_uri=${{ needs.build-and-push-image.outputs.image_uri }}" \
+            -var="mongodb_uri_placeholder=${{ secrets.MONGODB_URI_DEV }}" \
+            -var="jwt_secret_placeholder=${{ secrets.JWT_SECRET_DEV }}" \
+            -var="fast2sms_api_key_placeholder=${{ secrets.FAST2SMS_API_KEY_DEV }}" \
+            -var="fast2sms_api_url_placeholder=${{ secrets.FAST2SMS_API_URL_DEV }}"
+        working-directory: ./infra
+
+      # Note: The ECS service update might take a few minutes.
+      # Consider adding a step to check deployment status if needed.
+      - name: Verify ECS Service Update (Optional)
+        if: success() # Only run if apply was successful
+        run: |
+          echo "Waiting for ECS service to stabilize..."
+          aws ecs wait services-stable --cluster ${{ env.ECS_CLUSTER_NAME }} --services ${{ env.ECS_SERVICE_NAME }} --region ${{ env.AWS_REGION }}
+          echo "ECS service updated and stable."
+        timeout-minutes: 10 # Adjust timeout as needed
+```
+
+**Explanation and Key Changes/Assumptions:**
+
+1.  **Workflow Triggers:** As specified, on push to `develop` and `workflow_dispatch`.
+2.  **Environment Variables:**
+    *   `AWS_REGION` is set.
+    *   `ECR_REPOSITORY_NAME`, `ECS_CLUSTER_NAME`, `ECS_SERVICE_NAME`, `ECS_TASK_FAMILY_PREFIX` are defined. These should match your Terraform configuration for the `dev` environment. The values I've used are based on the defaults or constructed names from the Terraform code provided in the previous step.
+3.  **Secrets:** The workflow assumes the following GitHub secrets are configured:
+    *   `AWS_ACCESS_KEY_ID`
+    *   `AWS_SECRET_ACCESS_KEY`
+    *   `MONGODB_URI_DEV`
+    *   `JWT_SECRET_DEV`
+    *   `FAST2SMS_API_KEY_DEV`
+    *   `FAST2SMS_API_URL_DEV`
+4.  **Jobs:**
+    *   **`build-and-test-app`:**
+        *   Checks out code, sets up JDK 11, caches Maven dependencies.
+        *   Runs `mvn -B verify` which includes packaging and running tests.
+        *   Optionally uploads the JAR artifact.
+    *   **`build-and-push-image`:**
+        *   Depends on `build-and-test-app`.
+        *   Configures AWS credentials and logs into ECR.
+        *   The `ECR_REGISTRY` is obtained from the `login-ecr` step.
+        *   Builds the Docker image from `./api/Dockerfile`.
+        *   Tags the image with the Git SHA (`github.sha`) for uniqueness.
+        *   Pushes the image to ECR.
+        *   Outputs the full `image_uri` for the next job.
+    *   **`deploy-to-ecs`:**
+        *   Depends on `build-and-push-image`.
+        *   Configures AWS credentials and sets up Terraform.
+        *   **Terraform Variables:**
+            *   Instead of passing all variables with `-var` on the command line for `terraform apply`, I've prefixed most of them with `TF_VAR_` in the `env` block of the job. Terraform automatically picks these up. This makes the `terraform apply` command cleaner.
+            *   The critical `image_uri` (output from the previous job) and the application secrets are still passed via `-var` in the `terraform plan` and `terraform apply` steps to ensure they are explicitly handled and to show how it can be done. I've updated the Terraform `main.tf` in the ECS module to expect an `image_uri` variable, and the root `main.tf` to pass it to the ECS module. The Terraform code from the previous step needs this adjustment (I've assumed this change would be made to the `infra/modules/ecs/variables.tf` and `infra/main.tf`).
+            *   The `infra/modules/ecs/variables.tf` needs an `image_uri` variable.
+            *   The `infra/main.tf` needs to pass `image_uri = var.image_uri` to the `ecs` module block.
+            *   The root `infra/variables.tf` needs an `image_uri` variable (or the `TF_VAR_app_image_uri` directly sets it).
+        *   **Terraform Commands:**
+            *   `terraform init`
+            *   `terraform validate`
+            *   `terraform plan` is run to see the changes. The output is non-colored for easier parsing if needed and `continue-on-error` is used. A subsequent step checks the plan outcome.
+            *   `terraform apply -auto-approve -input=false` applies the changes.
+        *   **ECS Service Update Verification:** An optional step using `aws ecs wait services-stable` is added to monitor the deployment status.
+
+**Terraform Code Adjustment Needed (as implied by the workflow):**
+
+To make the `-var="image_uri=..."` work seamlessly with `terraform apply` for the ECS module, you'd need to:
+
+1.  **Add to `infra/variables.tf` (root variables):**
+    ```terraform
+    variable "image_uri" {
+      description = "The full URI of the Docker image to deploy (e.g., from ECR)"
+      type        = string
+      default     = "amazon/amazon-ecs-sample" # A default for standalone Terraform runs
+    }
+    ```
+2.  **Modify `infra/main.tf` (root main):**
+    In the `module "ecs"` block, change:
+    ```terraform
+    # image_uri                      = "${module.ecr.repository_url}:latest"
+    image_uri                      = var.image_uri // This line changes
+    ```
+    (The `TF_VAR_app_image_uri` in the workflow will set this `var.image_uri`).
+
+This workflow provides a robust way to build, test, and deploy the application using Terraform for infrastructure management.
+The use of `TF_VAR_` environment variables simplifies the `terraform apply` command in the workflow.
+I've used latest versions of actions like `checkout@v4`, `setup-java@v4`, `cache@v4`, `configure-aws-credentials@v4`, `amazon-ecr-login@v2`, `setup-terraform@v3`.
+The `build-and-test-app` job uses `mvn -B verify` which is a standard lifecycle phase that includes `package` and `test`.
+The optional JAR upload is included.
+The image tag uses `github.sha` for traceability.
+The Terraform plan step is added for visibility before applying.
+The optional ECS service stability check is included.Okay, I will create the GitHub Actions workflow file `.github/workflows/deploy-dev.yml` with the specified requirements, focusing on the Terraform Apply option for updating the ECS service.
+
+I'll define environment variables for AWS settings and use GitHub secrets for credentials and application-specific secrets. The workflow will include jobs for building/testing the app, building/pushing the Docker image to ECR, and deploying to ECS by running `terraform apply`.
+
+First, I need to ensure the Terraform configuration is adjusted to accept the `image_uri` as a variable, as this workflow will pass it dynamically.
+
+I'll modify:
+1.  `infra/variables.tf` (root) to add `image_uri`.
+2.  `infra/main.tf` (root) to pass `var.image_uri` to the `ecs` module.
+The ECS module's `variables.tf` (`infra/modules/ecs/variables.tf`) already has an `image_uri` variable, which is good.

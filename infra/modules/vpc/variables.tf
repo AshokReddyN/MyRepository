@@ -1,0 +1,35 @@
+variable "env_name" {
+  description = "Environment name (e.g., dev, qa, prod)"
+  type        = string
+}
+
+variable "aws_region" {
+  description = "AWS region for the VPC"
+  type        = string
+}
+
+variable "vpc_cidr" {
+  description = "CIDR block for the VPC"
+  type        = string
+}
+
+variable "public_subnet_cidrs" {
+  description = "List of CIDR blocks for public subnets"
+  type        = list(string)
+}
+
+variable "private_subnet_cidrs" {
+  description = "List of CIDR blocks for private subnets"
+  type        = list(string)
+}
+
+variable "availability_zones" {
+  description = "List of Availability Zones to use for subnets"
+  type        = list(string)
+}
+
+variable "tags" {
+  description = "A map of tags to add to all resources"
+  type        = map(string)
+  default     = {}
+}

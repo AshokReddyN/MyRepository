@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   mongodb:
     image: mongo:latest # Consider using a specific version like mongo:5.0 or mongo:6.0 for stability
@@ -10,10 +8,10 @@ services:
       - mongodb_data:/data/db # Persist MongoDB data
     networks:
       - user-management-net
-    healthcheck: # Optional: Basic healthcheck for MongoDB
-      test: echo 'db.runCommand("ping").ok' | mongo mongodb:27017/test --quiet
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
       interval: 10s
-      timeout: 5s
+      timeout: 10s # Increased timeout
       retries: 5
       start_period: 30s
 
